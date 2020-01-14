@@ -28,7 +28,10 @@ To rerun the analysis, unzip the data.7z.001, data.7z.002, data.7z.003 using [7z
 
 ### Methods
 
-I use Hierarchial Agglomerative Clustering, K-means clustering, Multi-Dimensional Analysis, and Keyword analysis to evaluate rhetorical strategies and moral loadings of the Political-Media Type groups. 
+* Hierarchial Agglomerative Clustering
+* K-means clustering
+* Multi-Dimensional Analysis (Multi Factor Analysis)
+* Keyword analysis 
 
 ## ACKNOWLEDGEMENTS & DISCLOSURE
 
