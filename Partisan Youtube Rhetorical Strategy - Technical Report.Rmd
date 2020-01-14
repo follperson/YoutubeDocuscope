@@ -1,0 +1,585 @@
+---
+title: "Partisan YouTube Rhetorical Strategy and Moral Signaling -Technical Appendix"
+output:
+  html_document:
+    df_print: paged
+---
+
+##  Overview
+
+The analysis outline is as follows:
+
+ 1. Gather the metadata to review the data we will be working with
+ 2. Load and clean the tagged text data
+ 3. Using Hierarchical Agglomerative Clustering, create dendrograms to represent the multidimensional 'closeness' of the different Political Leaning and Media Type groups
+ 4. visualize the clusters using K-Nearest Neighbors. 
+ 5. Using MultiDimensional Analysis we construct composite factor loadings of highly correlated rhetorical categories, and then plot the political leaning - media type groups along their position in the factor loading.
+
+
+### Package loading
+
+First we load the necessary packages for text processing. 
+
+```{r initial package loading, echo=T, include=T,message=F}
+library(cluster)
+library(dendextend)
+library(ggdendro)
+library(factoextra)
+library(quanteda)
+library(tidyverse)
+library(nFactors)
+library(texreg)
+source("resources/functions/keyness_functions.R")
+source("resources/functions/mda_functions.R")
+source("resources/functions/helper_functions.R")
+```
+
+
+### Load and combine the main data sources
+
+#### DocuScope Tag Breakdown
+
+We have the breakdown of the DocuScope tagging below. The unique index is the token_csv_name, representing a unique scraped youtube transcript. There are over 2500 rhetorical categories at the most detailed level. In the classification analysis I agglomerate them to make the data less sparse and easier to generalize. 
+
+```{r data loading, include=T,echo=T}
+df_info <- read.csv("data/docuscope/DIMENSION_cleaned.csv",stringsAsFactors = F)
+head(df_info)
+```
+
+#### Channel level 
+
+The channel data contains channel level data, including the two primary variables of interest: Political Leaning and Media Type. 
+
+```{r, include=T, echo=T}
+df_channels <- read.csv('data/youtube/compiled/COMPILED channel_data_20191212.csv', stringsAsFactors=F)
+head(df_channels)
+```
+
+#### Video Data
+
+The video data has video level data, like publish date and description for each video Id. It also has the Political Leaning and Media Type for playlist level designation. 
+
+```{r, include=T,echo=T}
+df_video <- read.csv('data/youtube/compiled/COMPILED video_data_20191212.csv',stringsAsFactors = F)
+head(df_video)
+```
+
+### Combining metadata
+
+We combine the video and channel dataframes to fill in all the non-playlist level political leaning and media type designations, and then clean up redundant columns, and finally incorporate the DocuScope Metadata to reflect the tagged counts. 
+
+```{r, include=T,echo=T}
+df_video <- left_join(df_video, df_channels[,c('channelId','Political.Leaning','Type')], by='channelId')
+df_video$channelName <- ifelse(df_video$playlistName!="", df_video$playlistName, df_video$channelTitle)
+df_video$Political.Leaning <- ifelse(df_video$Political.Leaning.x != '', df_video$Political.Leaning.x, df_video$Political.Leaning.y)
+df_video$Type <- ifelse(df_video$Type.x!="", df_video$Type.x, df_video$Type.y)
+
+drop_cols<-c('Type.y','Type.x','Political.Leaning.x','Political.Leaning.y','playlistName','views.scraped','title.scraped','likes.scraped','duration.scraped', 'dislikes.scraped','description.scraped','date.scraped','playlistId','transcript.scraped')
+df_video <- dplyr::select(df_video, -one_of(drop_cols))
+df_video <- df_video[!duplicated(df_video$videoId),]
+df_video$text_name <- paste(df_video$videoId, '.txt',sep='')
+df_joined <- inner_join(df_video, df_info, by='text_name')
+```
+
+In addition, we want to reduce the variability of the political partisanship, and pigeonhole the more varied poltiical leaning to standardized names. 
+
+```{r data loading 2, include=T, echo=T}
+polt_map <- data.frame(old=c("Left","Moderate","Liberal","not political","alt-right","Right","Conservative" ,"IDW","general","Libertarian","alt-lite", "Progressive"), 
+                       new=c("Left","Moderate","Liberal","Apolitical","Right","Right","Conservative" ,"Conservative","Moderate","Conservative","Right", "Liberal"))
+df_joined$Political.Leaning <- polt_map$new[match(df_joined$Political.Leaning,polt_map$old)]
+df_joined <- df_joined[df_joined$X...Tokens. > 20,]
+
+channel_counts <- df_joined %>% 
+  group_by(channelName, Political.Leaning, Type) %>%
+  summarize(words=sum(X...Word.Tokens.),
+            punct=sum(X...Punctuation.Tokens.),
+            total_tokens=sum(X...Tokens.), files=n())
+
+polt_type_counts <- channel_counts %>% group_by(Type, Political.Leaning) %>% 
+  summarize(nchannels=n(), files=sum(files), tokens=sum(words))
+
+rm(df_video, df_info, df_channels, polt_map)
+```
+
+```{r polt type counts}
+summarize(polt_type_counts,nchannels=sum(nchannels),
+          files=sum(files),
+          tokens=sum(tokens))
+knitr::kable(rbind.data.frame(polt_type_counts, c(Type='Total', Political.Leaning='Total', 
+                                                  nchannels=sum(polt_type_counts$nchannels), 
+                                                  files=sum(polt_type_counts$files), 
+                                                  tokens=sum(polt_type_counts$tokens))))
+
+```
+
+## Analysis
+
+### Rhetorical Strategy
+
+#### Data Preparation
+
+Next, we want to get into the meat of the analysis. First we need to do a little string adjustment to construct the proper filepaths for the DocuScope tagged data, as well as the untagged cleaned transcript texts. Then we subset to eliminate any transcripts which were not tagged. 
+
+```{r prep metadata, include=T, echo=T}
+df_meta <- df_joined
+
+df_meta$videoId.txt <- paste(df_meta$videoId,'txt',sep='.')
+df_meta$filepath_clean <- paste('data/youtube/transcripts', 'cleaned', df_meta$channelId, df_meta$videoId.txt ,sep='/')
+df_meta$cleaned <- file.exists(df_meta$filepath_clean)
+
+df_meta$ds_videoId <- str_replace_all(str_replace_all(df_meta$videoId, '-', ''), '_', '') 
+df_meta$filepath_tagged <- paste('data/youtube/transcripts','tagged', 
+                                 paste(paste(df_meta$ds_videoId, '-ubiq-tokens', sep=''), 
+                                       'txt',sep='.'), sep='/')
+df_meta$tagged <- file.exists(df_meta$filepath_tagged)
+df_meta <- df_meta[df_meta$tagged,]
+rm(df_joined)
+```
+
+Next we will load the text data, as well as the agglomerating DocuScope dictionary. 
+
+```{r docuscope corpus load, include=T,echo=T}
+docuscope_tagged_df <- suppressWarnings(
+  readtext_lite(df_meta$filepath_tagged))
+ds_dict <- dictionary(file = "dictionaries/ds_categories.yml", tolower = F)
+```
+
+Now we need to turn the text data into corpora, tokens, and document frequency matrices. Corpora are effectively binders of texts with a document ID index, and is an object that the `quanteda` package relies on to create the subsequent objects. Tokens in this case are one or greater words and/or punctuation which have been tagged as a DocuScope category. For example: 
+```
+hello##InterCommunicationBidHello i'm##FPStandAlone here##NarrImmediacyHere with##SynPrepSubord scott##CharProperNoun taylor##CharProperNoun who##zOrphanedGeneral has##InfoStatesHave his_own##ForceIntenseGeneral youtube##PubMediaInternet channel##DescriptObjs hello##InterCommunicationBidHello hello##InterCommunicationBidHello
+```
+
+From this tagging we strip out the particular word and focus on the tag to condense the data a manageable size of dimensions. Then we further condense the 2500 + rhetorical categories to the 37 root categories. Finally, we convert the tokenized data into a Document Frequency Matrix (effectively a data.frame with some class methods), proportionally weight the rhetorical categories within each transcript, and convert to a more manageable data.frame object. 
+
+
+```{r docuscope dfm, include=T, echo=T}
+yt_ds_corpus <- corpus(docuscope_tagged_df)
+yt_ds_tokens <- tokens(yt_ds_corpus, remove_punct = T, what = "fasterword")
+yt_ds_tokens <- as.tokens(lapply(yt_ds_tokens,function (x) gsub('.*##','',x)))
+yt_ds_tokens <- tokens_lookup(yt_ds_tokens, dictionary = ds_dict, levels = 1, case_insensitive = F)
+yt_ds_dfm <- dfm(yt_ds_tokens, tolower = F)
+
+yt_ds_norm <- dfm_weight(yt_ds_dfm, scheme = "prop")
+yt_ds_norm <- convert(yt_ds_norm, to = "data.frame")
+df_yt_ds <- yt_ds_norm %>% mutate(document = str_replace(document, "-ubiq-tokens.txt", "")) %>%
+  inner_join(dplyr::select(df_meta,'ds_videoId','channelName','Political.Leaning','Type'), 
+             by=c('document'='ds_videoId')) %>%
+  mutate_if(is.numeric, ~ . * 100) %>% 
+  mutate_if(is.character, as.factor) %>%
+  as.data.frame() 
+
+head(df_yt_ds)
+
+```
+
+
+Now we remove data which may be erroneous, such as having less that 80% of the transcript coherently tagged, or having any single rhetorical category account for more than 25% of the transcript. 
+
+```{r docuscope aggregation, include=T, echo=T}
+rm(docuscope_tagged_df,yt_ds_corpus,yt_ds_tokens,yt_ds_dfm,yt_ds_norm)
+df_yt_ds$document <- as.character(df_yt_ds$document)
+
+# we calculate the total % of the document which is accurately tagged, excluding non-tag columns 
+# (and the 'Orphaned' tag, representing unknowns)
+df_yt_ds$total <- rowSums(df_yt_ds[-c(1,38,39,40,41)])
+df_yt_ds <- filter(df_yt_ds, total > 80) %>% dplyr::select(-total)
+
+# Identify any document which has a single rhetorical category composing greater than 25% of the document
+ignore_docs <- (df_yt_ds %>% filter_if(is.numeric, any_vars(. > 25)))$document
+
+# Remove the issue documents, and create a new Poli.Lean_Type variable, combining the Political Leaning and Media Type variables
+df_yt_ds <- filter(df_yt_ds, !(df_yt_ds$document %in%ignore_docs)) %>%
+  dplyr::select(-Orphaned, -document) %>% 
+  mutate(Poli.Lean_Type = as.factor(paste(Political.Leaning, Type, sep='_')))
+
+# Remove redundant or unndeccesary columns and reposition the new composite one
+df_ds_poli_type <- df_yt_ds %>%  
+  dplyr::select(-c('channelName','Type','Political.Leaning')) %>% 
+  dplyr::select('Poli.Lean_Type', everything())
+
+rm(ignore_docs)
+```
+
+#### Clustering
+
+
+```{r political type cluster setup, include=T, echo=T}
+# We use the mean average of the frequency of the rhetorical category among all the videos in each political-media 
+  # to visualize and identify these groups in regard to one another
+df_ds_poli_type_gb <- group_by(df_ds_poli_type, Poli.Lean_Type) %>% summarise_all(mean)
+df_ds_poli_type_gb <- df_ds_poli_type_gb %>% column_to_rownames('Poli.Lean_Type')
+df_ds_poli_type_gb<- scale(as.data.frame(df_ds_poli_type_gb))
+
+# A silhouette plot identifies the appropriate number of clusters is appropriate
+fviz_nbclust(df_ds_poli_type_gb, FUN = hcut, method = "silhouette")
+```
+
+Eight clusters seems a bit high considering the only 16 total political leaning - media type groups. Lets look at the resulting dendrogram and review the clusters. 
+
+```{r political type cluster dendrogram, include=T, echo=T}
+d <- suppressWarnings(dist(df_ds_poli_type_gb, method = "euclidean"))
+hca <- agnes(d, method = "ward")
+
+plot(as.hclust(hca), cex = 0.6, hang = -1)
+rect.hclust(hca, k = 8)
+```
+
+Our dendrogram appears to cluster in a fairly coherent manner - Vlogs, News Channels, and Talk are all fairly near.
+In addition, Left + liberal and Right + Conservative vlogs are all closer than their partisan opposites. 
+This is affirming of our data selection and labeling, and is what we would expect for the most part. 
+Three facets of this dendroram stand out - the *Liberal_Talk Show* clust ers with the Vlogs, and *Conservative_News Cannels* clusters with the talk shows. In addition, the Moderate news Channel and Right News Channel are both relatively isolated. 
+
+Next, we can visualize the euclideean distance between the political-media groups, this can provide further insight to the clustering structure. 
+
+```{r political type docuscope dist, include=T, echo=T}
+ds_dist <- get_dist(df_ds_poli_type_gb)
+fviz_dist(ds_dist, gradient = list(low = "tomato", mid = "white", high = "steelblue"))
+```
+
+A distance plot shows the high similarity of the Vlogs, especially the partisan charged ones. The *Moderate_Talk Show*, *Conservative_Talk Show* and *Conservative_News Channel* also have low distance, as seen in the dendrogram. However, no other obvious low distance groups appear. *Apolitical_Vlogs* appear to stand in contrast to the political media. 
+
+ Next we see a similar representation in the K-means clustering as with the dendrogram clustering, using the same number of clusters. 
+
+```{r kmeans docuscope,include=T,echo=T}
+km_ds <- kmeans(df_ds_poli_type_gb, centers = 8, nstart = 25)
+fviz_cluster(km_ds, data = df_ds_poli_type_gb, repel=T)
+```
+
+#### MultiDimensional (MultiFactor) Analysis
+
+As our tagging metric is zero sum by construction, we can suppose that the rhetorical tags to be correlated among each other. We can use this knowledge to create composite feature factors which can explain some of the variance of the rhetorical usage. 
+
+```{r docuscope factors corrplot, include=T,echo=T}
+# Returning to the video-level data, we can visualize a correlation plot to check if MDA is an appropriate method. Pockets of high correlation (positive or negative are suggestive of a good candidate for MDA)
+m_ds <- df_ds_poli_type %>% dplyr::select(-c('Poli.Lean_Type'))
+d_ds <- m_ds[, sapply(m_ds, is.numeric)]
+cat_id_ds <- m_ds[, sapply(m_ds, is.factor)]
+m_cor_ds <- cor(d_ds, method = "pearson")
+corrplot::corrplot(m_cor_ds, type = "upper", order = "hclust", 
+                   tl.col = "black", tl.srt = 45, diag = F, tl.cex = 0.5)
+```
+
+
+Now we need to identify the appropriate number of factors to distill the rhetorical categories. 
+
+```{r docuscope factors screeplot, include=T,echo=T}
+diag(m_cor_ds) <- 0
+threshold_ds <- apply(m_cor_ds, 1, function(x) max(abs(x), na.rm = T) > .2)
+m_trim_ds <-  m_cor_ds[,threshold_ds]
+fa.parallel(m_trim_ds, fa="fa", main = "Scree Plot", show.legend=FALSE)
+```
+
+The Scree plot above suggests an appropriate number of factors could be two or three. 
+
+
+```{r}
+# we first need to scale the rhetorical variable frequencies
+df_factors <- as.data.frame(scale(df_ds_poli_type[, sapply(df_ds_poli_type, is.numeric)]))
+df_factors$Poli.Lean_Type <- df_ds_poli_type$Poli.Lean_Type
+# then we gather the factor loadings, the factor scores of the political-type combinations, and the explained variance from each factor. 
+ds_loadings <- get_loadings(df_factors, 3,  get = "loadings",thresh=.2)
+ds_scores <- get_loadings(df_factors, 3, get = "scores",thresh=.2)
+ds_aov <- get_loadings(df_factors, 3, get = "aov_scores",thresh=.2)
+```
+
+Next we can create a table represetning the factors, and their relative varance explantory power.
+
+```{r anova for docuscope factors, include=T, echo=F}
+f_aov1 <- aov(Factor1 ~ group1, data = ds_aov)
+f_aov2 <- aov(Factor2 ~ group1, data = ds_aov)
+f_aov3 <- aov(Factor3 ~ group1, data = ds_aov)
+
+r2_1<-summary(lm(Factor1~group1, data=ds_aov))$r.squared
+r2_2<-summary(lm(Factor2~group1, data=ds_aov))$r.squared
+r2_3<-summary(lm(Factor3~group1, data=ds_aov))$r.squared
+
+all_aov<-rbind(
+  broom::tidy(f_aov1) %>% mutate(Rsq=r2_1),
+  broom::tidy(f_aov2)%>% mutate(Rsq=r2_2),
+  broom::tidy(f_aov3) %>% mutate(Rsq=r2_3)
+) %>% filter(term=='group1') %>% 
+  dplyr::select(-term) %>% 
+  mutate(Factor=c('Factor1','Factor2','Factor3'
+  )) %>% dplyr::select(Factor, everything())
+all_aov[-1] <- round(all_aov[-1], 3)
+ds_loadings_anova_table <- rbind(round(ds_loadings, 3),Summary=c(Factor1="-------", Factor2="-------",Factor3="-------"),setNames(data.frame(t(all_aov)),c("Factor1",'Factor2','Factor3')))
+
+knitr::kable(ds_loadings_anova_table[-c(20,21,22,23,24),])
+```
+
+Next we will plot the loadings of the factors, with the highly positive components at the top and the highly negative components at the bottom, offering a somewhat coherent dimensions of analysis, for each factor.  
+
+```{r, include=T,echo=T, message=F}
+par(mfrow=c(1,3))
+plot_scores(ds_loadings, ds_scores, 1)
+plot_scores(ds_loadings, ds_scores, 2)
+plot_scores(ds_loadings, ds_scores, 3)
+```
+
+
+```{r cleanup ds,include=F,echo=F}
+rm(all_aov, cat_id_ds, d_ds, df_ds_poli_type, df_ds_poli_type_gb, df_factors, ds_aov, ds_f_loadings, ds_fa, ds_loadings, ds_scores,f_aov1,f_aov2,f_aov3,hca,km_ds,m_cor_ds,m_ds,m_trim_ds,polt_type_counts.)
+```
+
+
+### Moral
+
+#### Data Loading
+
+We use the untagged transcripts in our evaluation of moral signals, and use a dictionary to tag morally loaded words with their value morality signal. 
+
+For example: 
+
+ * Sacred, holy, pristine, lice, addict, vomit, plague, contagious all reflect the moral domain of purity. 
+ * Slave, worship, elder, dictator, chief, guide, master, traitor, duty all reflect the moral domain of authority. 
+
+Though there was the possibility of using positive and negative charges of the morally loaded word, I flattened the valence to capture any identification with the moral category, as I was not able to determine towards what the morally loaded word was directed. 
+
+```{r Moral Corpus init,include=T,echo=T}
+cleaned_df <- suppressWarnings(readtext_lite(df_meta[df_meta$cleaned, 'filepath_clean']))
+mfd_dict <- dictionary(file = "dictionaries/MFD2.0_no_charge.dic", tolower = F)
+
+yt_corpus_raw <- corpus(cleaned_df)
+yt_tokens_raw <- tokens(yt_corpus_raw, remove_punct = T, what = "fasterword")
+
+# here we are only including the moral loading of tokens in our morality dictionary, and discarding the rest
+toks_mfd <- tokens_lookup(yt_tokens_raw, dictionary=mfd_dict)
+yt_mfd_dfm <- dfm(toks_mfd, tolower = F)
+
+
+# we need to weight the moral token frequency by the total words in the transcript
+df_ntokens <- data.frame(ntoken(yt_tokens_raw))
+df_ntokens$document <- rownames(df_ntokens)
+names(df_ntokens)[1] <- "ntokens"
+yt_mfd_dfm_df <- convert(yt_mfd_dfm, to = "data.frame")
+yt_mfd_dfm_df<- left_join(yt_mfd_dfm_df, df_ntokens, by='document')
+
+# here we divide the count of the moral words by the total tokens in the transcrip
+yt_mfd_dfm_df[,2:6] <- yt_mfd_dfm_df[,2:6] / yt_mfd_dfm_df[,7]
+
+# now we combine our weighted moral words with the metadata document identifying the channel and political leaning
+df_mfd <- yt_mfd_dfm_df %>% mutate(document = str_replace(document, ".txt", "")) %>%
+  inner_join(dplyr::select(df_meta,'videoId','channelName','Political.Leaning','Type'), 
+             by=c('document'='videoId')) %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.numeric, ~ . * 100) %>% 
+  as.data.frame()
+```
+
+Next we discard outliers and full non-morally oriented transcripts. We subset our data to only consider those with at least one moral signifier. 
+
+```{r mfd cleaning,include=T,echo=T}
+df_mfd$total <- rowSums(df_mfd[,sapply(df_mfd, is.numeric)])
+# drop documents with no moral identification
+df_mfd <- filter(df_mfd, total > 0) %>% dplyr::select(-total)
+
+df_mfd <- df_mfd %>% 
+  dplyr::select(-ntokens, -document) %>% 
+  mutate(Poli.Lean_Type = as.factor(paste(Political.Leaning, Type, sep='_'))) 
+
+df_moral_poli_type <- df_mfd %>%  
+  dplyr::select(-c('channelName','Type','Political.Leaning')) %>% 
+  dplyr::select('Poli.Lean_Type', everything())
+```
+
+We are going to run through a similar analysis with the moral loadings, but it seems that there is not much clustering structure to be found in the aggregated data. 
+
+##### Silhouette plot to identify peak number of clusters
+
+```{r dendrogram moral diag,include=T,echo=T}
+df_moral_poli_type_gb <- group_by(df_moral_poli_type, Poli.Lean_Type)  %>% summarise_all(mean)
+df_moral_poli_type_gb <- df_moral_poli_type_gb %>% column_to_rownames('Poli.Lean_Type')
+df_moral_poli_type_gb<- scale(as.data.frame(df_moral_poli_type_gb))
+fviz_nbclust(df_moral_poli_type_gb, FUN = hcut, method = "silhouette")
+```
+
+
+##### Cluster Dendrogram
+
+```{r dendrogram moral,include=T,echo=T}
+d <- suppressWarnings(dist(df_moral_poli_type_gb, method = "euclidean"))
+hca <- agnes(d, method = "ward")
+plot(as.hclust(hca), cex = 0.6, hang = -1)
+rect.hclust(hca, k = 2)
+```
+
+##### Distance Matrix
+
+```{r political type moral cluster daignostics, include=T, echo=T}
+moral_dist <- get_dist(df_moral_poli_type_gb)
+fviz_dist(moral_dist, gradient = list(low = "tomato", mid = "white", high = "steelblue"))
+```
+
+##### K-Means visualization
+
+
+```{r kmeans moral,include=T,echo=T}
+km_moral <- kmeans(df_moral_poli_type_gb, centers = 2, nstart = 25)
+fviz_cluster(km_moral, data = df_moral_poli_type_gb, repel=T)
+```
+
+Our hierarchical clustering does not appear to conform to our presupposed notions on first look. With the benefit of a distance plot we see that the there is a coherent cluster around the non-radical (Liberal/Moderate/Conservative) non-vlogs. There is also a less strong but still notable cluster among the Right/Left Talk Shows and Right/Left/Conservative Vlogs. as these are relatively partisan charged channels of communication we would expect more moral signaling. We see that the average number of total morally charged words is much higher for our more radical media and political orientation. 
+
+
+#### Moral Keyness
+
+Now we pivot to keyness measures of moral signaling. Keyness highlights words which occur with higher frequency between two groups of texts (a target and a reference). We use the p-value from a chi^2 test to demonstrate the statistical likelihood, and a log likelihood ratio statistic to demonstrate effect size. 
+
+```{r,include=T,echo=T}
+#df_meta<-df_meta %>% inner_join(df_ntokens%>% mutate(videoId=str_replace(document,'.txt','')) %>% dplyr::select(videoId, ntokens))
+df_docvars <- filter(df_meta, cleaned == TRUE) %>% dplyr::select('channelName','Political.Leaning','Type')
+
+yt_mfd_dfm_weighted <- dfm_weight(yt_mfd_dfm,scheme='prop')
+docvars(yt_mfd_dfm_weighted) <- df_docvars
+
+# split up the dataframe to facilitate relevant comparisons
+yt_mfd_dfm_vlogs <- dfm_subset(yt_mfd_dfm_weighted, Type=='Vlog')
+yt_mfd_dfm_vlogs_left_lib <- dfm_subset(yt_mfd_dfm_vlogs, Political.Leaning %in% c('Left','Liberal'))
+yt_mfd_dfm_vlogs_right_cons <- dfm_subset(yt_mfd_dfm_vlogs, Political.Leaning %in% c('Conservative','Right'))
+yt_mfd_dfm_vlogs_left <- dfm_subset(yt_mfd_dfm_vlogs, Political.Leaning=='Left')
+yt_mfd_dfm_vlogs_right <- dfm_subset(yt_mfd_dfm_vlogs, Political.Leaning=='Right')
+
+yt_mfd_dfm_nvlogs <- dfm_subset(yt_mfd_dfm_weighted, Type!='Vlog')
+yt_mfd_dfm_nvlogs_ll <- dfm_subset(yt_mfd_dfm_nvlogs, Political.Leaning %in% c('Left','Liberal'))
+yt_mfd_dfm_nvlogs_rc <- dfm_subset(yt_mfd_dfm_nvlogs, Political.Leaning %in% c('Conservative','Right'))
+yt_mfd_dfm_nvlogs_left <- dfm_subset(yt_mfd_dfm_nvlogs, Political.Leaning %in% c('Left'))
+yt_mfd_dfm_nvlogs_right <- dfm_subset(yt_mfd_dfm_nvlogs, Political.Leaning %in% c('Right'))
+
+kp1 <- data.frame(keyness_pairs(yt_mfd_dfm_vlogs_left, yt_mfd_dfm_vlogs_right)[c('1_v_2_lr','1_v_2_pv')])
+kp2 <- data.frame(keyness_pairs(yt_mfd_dfm_vlogs_left_lib,yt_mfd_dfm_vlogs_right_cons)[c('1_v_2_lr','1_v_2_pv')])
+kp3 <- data.frame(keyness_pairs(yt_mfd_dfm_nvlogs_ll,yt_mfd_dfm_nvlogs_rc)[c('1_v_2_lr','1_v_2_pv')])
+kp4 <- data.frame(keyness_pairs(yt_mfd_dfm_nvlogs_left, yt_mfd_dfm_nvlogs_right)[c('1_v_2_lr','1_v_2_pv')])
+kp5 <- data.frame(keyness_pairs(yt_mfd_dfm_vlogs, yt_mfd_dfm_nvlogs)[c('1_v_2_lr','1_v_2_pv')])
+
+kp1$feat <- rownames(kp1)
+kp2$feat <- rownames(kp2)
+kp3$feat <- rownames(kp3)
+kp4$feat <- rownames(kp4)
+kp5$feat <- rownames(kp5)
+
+keyness_table <- inner_join(kp1, 
+                            inner_join(kp2, 
+                                       inner_join(kp4,
+                                                  inner_join(kp3, kp5,by='feat'),
+                                                  by='feat'), 
+                                       by='feat'), 
+                            by='feat')
+names(keyness_table) <- c('Vlog.Left-Right_LogRatio','Vlog.Left-Right_P-Val',
+                          'MoralFeature',
+                          'Vlog.LeftLib-RightCons_LogRatio','Vlog.LeftLib-RightCons_P-Val',
+                          'NonVlog.Left-Right_LogRatio','NonVlog.Left-Right_P-Val',
+                          'NonVlog.LeftLib-RightCons_LogRatio','NonVlog.LeftLib-RightCons_P-Val',
+                          'Vlog-NonVlog_LogRatio','Vlog-NonVlog_P-Val')
+
+
+t((keyness_table %>% dplyr::select(MoralFeature, everything())))
+
+```
+
+The keyness table above reflects keyness comparsisons between: Left v Right Vlogs, Left/Liberal v Right/Conservative Vlogs, Left/Liberal v Righ/Conservative Non-Vlogs, Left v Right Non-Vlogs, and Vlogs vs Non-vlogs. Overall we find differences between the Left-Right and LeftLib-RightCons comparisons. The the Vlog category we see that the Left vlogs evoke Sanctity significantly more so than those on the Right.  However, when also considering non-radical positions, we find the moral arugments made in Vlogs does not significantly differ from. 
+
+When only considering Left v Right, we find substantial differences in the Left's preference for words denoting Loyalty and Care, while using Authority and Sanctity much less
+When also considering our more traditional domains of News Channels and Talk Shows, we find Left/Liberals to be more apt to use words related to Loyalty and Care, but not so many words related to Authority or fairness.
+
+Overall, comparing Vlogs and Non-vlogs we see a substantial preference for Sanctity, and Care, and fewer tokens related to Authority. 
+
+## Discussion
+
+From our MDA it seems that indeed there is rhetorical similarity among partisan vlogs, against non-partisan vlogs and non-vlog media. 
+
+Dimensionality reduction via factorization of the primary variables, we find that a small but meaningful amout of the variation can be reduced into three factors. The factors loosely analgous to engaged forceful discussion are found  prevalent in Vlogs, in opposition to News Channels. Complex academic exposition, and a lack of characterization, is seen more in Left and Liberal News Channles and Vlogs, and much less so in talk shows of any sort. In addition, a lack of Description terms does nt appear to map ont our political media, though it is worth noting that our vlogs appear to cluster quite near to eachother and to 0. 
+
+It seems that rhetorical similarity is much higher within medium than within political group. This confirms our initial hypothesis, especially in consideration of the consistently clustered vlog groups. The rhetorical strategies for Left/Liberal and Right/Conservative Vlogs are similar. Upon reflection, we could conceive of this as register variation, with different media being different linguistic landscapes. Just as written media and spoken media have the peculiarities of their own media, so do Cable News, Talk Shows, and Vlogs. 
+
+Regarding the Moral signalling tokens present in our data, we find that Vlogs on the whole include less address of Authority, while more address of Sanctity and Care. There does not appear to be a difference in how Left/Liberal Vlogs use morally loaded language than Right/Conserative Vlogs, though Left seems to use Sanctity signalling morality more frequently. 
+
+There is a substantial difference in how Partisan media use morally charged language between Vlogs and Non-Vlogs. The Left/Liberals in Non-Vlogs use words appealing to Care and Loyalty, while Vlogs did not exhibit  
+
+
+
+## Appendix
+
+In addition, in clustering the docuscope tagged channel level data we see a bit of the expected grouping structure. 
+
+```{r display channel dendrogram, echo=T, include=T}
+# First we filter and group by relevant channle, political leaning, and media groups
+df_ds_channel <- df_yt_ds %>% dplyr::select(-c('Political.Leaning','Type')) %>% dplyr::select('channelName', everything())
+df_ds_channel_politype <- suppressWarnings(group_by(df_yt_ds, channelName, Type, Political.Leaning) %>% summarize_all(mean))
+df_ds_channel_poli <- suppressWarnings(group_by(df_yt_ds, channelName, Political.Leaning) %>% summarize_all(mean) %>% dplyr::select(-Type))
+df_ds_channel_type <- suppressWarnings(group_by(df_yt_ds, channelName, Type) %>% summarize_all(mean) %>% dplyr::select(-Political.Leaning))
+df_ds_channel_gb <- suppressWarnings(group_by(df_ds_channel, channelName) %>% summarise_all(mean))
+
+# prepare the denrogram plot outline at the channel level
+d <- get_dist(df_ds_channel_gb, method = "euclidean")
+hc <- hclust(d, method = "ward.D2" )
+hc$labels <- df_ds_channel_gb$channelName
+
+# create color labeling by political leaning
+color_index_polt <-as.numeric(
+  (arrange(df_ds_channel_poli, factor(as.character(df_ds_channel_poli$channelName),levels=labels(hc)))  %>% 
+     dplyr::select(Political.Leaning))[[2]])
+
+# create color labeling by media type
+color_index_type <-as.numeric(
+  (arrange(df_ds_channel_type, factor(as.character(df_ds_channel_type$channelName),levels=labels(hc)))  %>% 
+     dplyr::select(Type))[[2]])
+
+# plot political leanding colored dendrogram
+hc %>% as.dendrogram %>% 
+  dendextend::set('labels_col', color_index_polt * 3)  %>% 
+  dendextend::set('labels_cex',.6) %>% 
+  plot(main="Channel Clustering (Political.Leaning)")
+rect.hclust(hc, k = 5)
+legend('topleft', legend=c(as.character(unique(df_ds_channel_poli$Political.Leaning))), fill=unique(as.numeric(df_ds_channel_poli$Political.Leaning) *3))
+
+
+# plot media type dendrogram
+hc %>% as.dendrogram %>% 
+  dendextend::set('labels_col', color_index_type * 3)  %>% 
+  dendextend::set('labels_cex',.6) %>% 
+  plot(main="Channel Clustering (Media Type)")
+rect.hclust(hc, k = 5)
+legend('topleft', legend=c(as.character(unique(df_ds_channel_type$Type))), fill=unique(as.numeric(df_ds_channel_type$Type) *3))
+
+
+
+```
+
+In addition, we can specify to look at just the vlog content. 
+
+
+```{r display vlog dendrogram, echo=T, include=T}
+# Filter as needed
+df_ds_channel_politype_gb <- df_ds_channel_politype %>% filter(Type=='Vlog') %>% dplyr::select(-Type)
+
+# create dendrogram strucutre
+d <- get_dist(df_ds_channel_politype_gb, method = "euclidean")
+hc <- hclust(d, method = "ward.D2" )
+hc$labels <- df_ds_channel_politype_gb$channelName
+
+# create color index for political types of vlogs only
+color_index_vlog_polt  <- as.numeric(
+  (arrange(df_ds_channel_politype_gb, factor(as.character(df_ds_channel_politype_gb$channelName), levels=labels(hc))
+           )  %>% 
+     dplyr::select(Political.Leaning))[[3]])
+  
+# Plot dendrogram of vlogs only, colored by political type 
+hc %>% as.dendrogram %>% 
+  dendextend::set('labels_col', color_index_vlog_polt * 3)  %>% 
+  dendextend::set('labels_cex',.6) %>% 
+  plot(main="Channel Clustering (Vlogs Only)")
+rect.hclust(hc, k = 5)
+legend('topleft', legend=c(as.character(unique(df_ds_channel_politype_gb$Political.Leaning))), fill=unique(as.numeric(df_ds_channel_politype_gb$Political.Leaning) *3))
+```
+
+
+
+
+### Channels Counts
+
+
+```{r,include=T,echo=F}
+channel_counts
+```
+
+
