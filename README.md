@@ -18,8 +18,8 @@ I found the videos using the google API, and scraped the data using [a related r
 The text transcripts were then tagged using [DocuScope](https://www.cmu.edu/dietrich/english/research/docuscope.html) , which is designed for rhetorical analysis.
 
 See examples here: 
-[Cleaned Transcript](/data/youtube/transcripts/cleaned)
-[Docuscope tagged](/data/youtube/transcripts/tagged)
+[Cleaned Transcript](/ex/RawTranscript.txt)
+[Docuscope tagged](/ex/DocuscopeTaggedTranscript.txt)
 
 The underlying data is available in the data.7z file, compromising about 36000 video transcrips in tagged and cleaned formats. 
 The code also relies on a handful of metadata files, included in the [data/docuscope/](/data/docuscope/) and [data/youtube/compiled](/data/youtube/compiled/) folders.
