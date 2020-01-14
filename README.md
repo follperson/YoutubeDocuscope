@@ -24,7 +24,7 @@ See examples here:
 The underlying data is available in the data.7z file, compromising about 36000 video transcrips in tagged and cleaned formats. 
 The code also relies on a handful of metadata files, included in the [data/docuscope/](/data/docuscope/) and [data/youtube/compiled](/data/youtube/compiled/) folders.
 
-To rerun the analysis, unzip in the local repo, install any necessary packages as evidenced in the first chunk of the `technical-report.rmd` file, and knit, or execute the code chunk by chunk in the `techincal-report.rmd`.
+To rerun the analysis, unzip the data.7z.001, data.7z.002, data.7z.003 using [7zip](https://www.7-zip.org/)  in the local repo, install any necessary packages as evidenced in the first chunk of the `Partisan Youtube Rhetorical Strategy - Technical Report.rmd` file, and knit, or execute the code chunk by chunk. 
 
 ### Methods
 
@@ -34,5 +34,5 @@ I use Hierarchial Agglomerative Clustering, K-means clustering, Multi-Dimensiona
 
 [Dr. David Brown](https://www.cmu.edu/dietrich/english/people/faculty/bios/david-brown.html) for his course and direction, his instrumental helper functions at [/resources/functions](/resources/functions), and his tagging of my transcript data with DocuScope tagging software.
 
-[Contrapoints](https://www.youtube.com/channel/UCNvsIonJdJ5E4EXMa65VYpA) for introducting me to political youtube!
+[Contrapoints](https://www.youtube.com/channel/UCNvsIonJdJ5E4EXMa65VYpA) for introducing me to political youtube!
 
