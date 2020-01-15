@@ -22,9 +22,15 @@ See examples here:
 [Docuscope tagged](/ex/DocuscopeTaggedTranscript.txt)
 
 The underlying data is available in the data.7z file, compromising about 36000 video transcrips in tagged and cleaned formats. 
-The code also relies on a handful of metadata files, included in the [data/docuscope/](/data/docuscope/) and [data/youtube/compiled](/data/youtube/compiled/) folders.
+The code also relies on a handful of metadata files, included in the data/docuscope/ and data/youtube/compiled folders, witihin the zipped file.
 
-To rerun the analysis, unzip the data.7z.001, data.7z.002, data.7z.003 using [7zip](https://www.7-zip.org/)  in the local repo, install any necessary packages as evidenced in the first chunk of the `Partisan Youtube Rhetorical Strategy - Technical Report.rmd` file, and knit, or execute the code chunk by chunk. 
+### Setup
+
+To rerun the analysis:
+* clone the repo to your local
+* unzip the `data.7z.001, data.7z.002, data.7z.003` using [7zip](https://www.7-zip.org/) in your local repo,
+* install any necessary packages as evidenced in the first chunk of the `Partisan Youtube Rhetorical Strategy - Technical Report.rmd` file
+* knit the file, or execute the code chunk by chunk. 
 
 ### Methods
 
