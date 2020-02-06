@@ -28,7 +28,8 @@ The code also relies on a handful of metadata files, included in the data/docusc
 
 To rerun the analysis:
 * clone the repo to your local
-* unzip the `data.7z.001, data.7z.002, data.7z.003` using [7zip](https://www.7-zip.org/) in your local repo,
+* contact me for data
+    * unzip the `data.7z.001, data.7z.002, data.7z.003` using [7zip](https://www.7-zip.org/) in your local repo, 
 * install any necessary packages as evidenced in the first chunk of the `Partisan Youtube Rhetorical Strategy - Technical Report.rmd` file
 * knit the file, or execute the code chunk by chunk. 
 
